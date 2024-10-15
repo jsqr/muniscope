@@ -41,7 +41,6 @@ for file in "$input_dir"/*.docx; do
         sed -i '' 's/&nbsp;/ /g' "$temp_dir/$filename.txt"
         sed -i '' 's/&ndash;/-/g' "$temp_dir/$filename.txt"
         sed -i '' 's/&sect;/§/g' "$temp_dir/$filename.txt"
-        # Unfortunately, a bunch of other weird Unicode characters are still present
     else
         echo "'$file' is not a file. Skipping..."
     fi
