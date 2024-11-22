@@ -8,7 +8,8 @@
 DROP TABLE IF EXISTS associations CASCADE;
 DROP TYPE IF EXISTS assoc_type CASCADE;
 DROP TABLE IF EXISTS segments;
-DROP TABLE IF EXISTS provisions;
+DROP TABLE IF EXISTS chunks;
+DROP TABLE IF EXISTS provisions; -- legacy
 DROP TABLE IF EXISTS codes;
 
 -- Track associations among provisions
@@ -23,21 +24,21 @@ CREATE TABLE associations (
        right_id INTEGER -- ref to associated provision (e.g., list of applicable defs)
 );
 
--- Provisions may be longer than the optimal chunk size for an embedding
--- (say, 500 tokens), so we break them up into segments for vector search
-CREATE TABLE segments (
-       segment_id SERIAL PRIMARY KEY,
-       provision_id INTEGER, -- foreign key to citable provision
+-- Segments may be longer than the optimal chunk size for an embedding
+-- (say, 1000 characters), so we break them up into chunks for vector search
+CREATE TABLE chunks (
+       chunk_id SERIAL PRIMARY KEY,
+       segment_id INTEGER, -- foreign key to citable segment
        begin_idx INTEGER, -- index of start of segment within provision text
        end_idx INTEGER, -- index of end of segment
-       content VARCHAR(500), -- FIXME: replace with dynamic sql to allow tuning
+       content VARCHAR(2000), -- FIXME: replace with dynamic sql to allow tuning
        embedding VECTOR(1536) -- FIXME: see above (1536 for text-embedding-3-small)
 );
 
--- 'Provisions' here are the smallest citable divisions within the organizational
+-- 'Segments' here are the smallest citable divisions within the organizational
 -- scheme of a code. We keep track of all the headings
-CREATE TABLE provisions (
-       provision_id SERIAL PRIMARY KEY,
+CREATE TABLE segments (
+       segment_id SERIAL PRIMARY KEY,
        code_id INTEGER, -- foreign key to code
        H1 TEXT,
        H2 TEXT,
@@ -61,10 +62,10 @@ CREATE TABLE codes (
 );
 
 -------------------------------------------------------------------
--- Full-text search using the search_vector column in provisions --
+-- Full-text search using the search_vector column in segments   --
 -------------------------------------------------------------------
 
-CREATE OR REPLACE FUNCTION provisions_search_vector_update() RETURNS trigger AS $$
+CREATE OR REPLACE FUNCTION segments_search_vector_update() RETURNS trigger AS $$
 BEGIN
   NEW.search_vector :=
     to_tsvector('english', COALESCE(NEW.H1, '')) ||
@@ -77,10 +78,10 @@ BEGIN
 END
 $$ LANGUAGE plpgsql;
 
--- Update search_vector when relevant data in provisions changes
-CREATE TRIGGER provisions_search_vector_update
-BEFORE INSERT OR UPDATE ON provisions
-FOR EACH ROW EXECUTE FUNCTION provisions_search_vector_update();
+-- Update search_vector when relevant data in segments changes
+CREATE TRIGGER segments_search_vector_update
+BEFORE INSERT OR UPDATE ON segments
+FOR EACH ROW EXECUTE FUNCTION segments_search_vector_update();
 
 -- Create a generalized inverted index
-CREATE INDEX idx_provisions_search_vector ON provisions USING GIN (search_vector);
+CREATE INDEX idx_segments_search_vector ON segments USING GIN (search_vector);
