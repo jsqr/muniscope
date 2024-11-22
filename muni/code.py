@@ -35,7 +35,7 @@ class Segment:
     level: Level
     headings: dict[Level, Heading|None] = field(default_factory=dict)
     paragraphs: list[str] = field(default_factory=list) # list of paragraphs
-    chunks: list[str] = field(default_factory=list)
+    chunks: list[str] = field(default_factory=list) # sized for embeddings
 
     def chunkify(self, n: int):
         """Regroup the paragraphs of a segment into chunks of size no more than n characters."""
@@ -117,7 +117,7 @@ class StateMachineParser:
         for paragraph in paragraphs:
             match = match_heading(paragraph, self.patterns)
             if match:
-                print(f"{' ' * 2 * match.level.value}{match.level.name} heading: {match.enumeration} {match.heading_text}")
+                print(f"{' ' * 4 * match.level.value}{match.level.name} heading: {match.enumeration} {match.heading_text}")
 
 ##################################################
 ## Parsing
@@ -233,23 +233,25 @@ class Jurisdiction:
         except FileNotFoundError as e:
             print(f"Error reading {self.source_local}: {e}")
 
-def summarize_document(document: list[Segment]):
-    for segment in document:
-        if len(segment.paragraphs) == 0:
-            continue
-        text = '\n'.join(segment.paragraphs)
-        print(f"{segment.level}: {len(segment.paragraphs)} paragraphs, {len(text)} characters")
+    def parse(self):
+        self.parser = StateMachineParser(self.name, self.patterns)
+        self.document = self.parser.parse(self.raw_text)
 
-def chunkify_document(document: list[Segment], n: int):
-    for segment in document:
-        if len(segment.paragraphs) == 0:
-            continue
-        segment.chunkify(n)
+    def chunkify(self, n: int = 1000):
+        for segment in self.document:
+            if len(segment.paragraphs) == 0:
+                continue
+            segment.chunkify(n)
 
-def summarize_chunks(document: list[Segment]):
-    for segment in document:
-        for i, chunk in enumerate(segment.chunks):
-            print(f"{segment.level} chunk {i}: {len(chunk)} characters")
+    def show_outline(self):
+        self.parser.summarize_matches(self.raw_text)
+
+    def summarize(self):
+        for segment in self.document:
+            if len(segment.paragraphs) == 0:
+                continue
+            text = '\n'.join(segment.paragraphs)
+            print(f"{segment.level}: {len(segment.chunks)} chunks, {len(segment.paragraphs)} paragraphs, {len(text)} characters")
 
 ##################################################
 ## Embeddings
