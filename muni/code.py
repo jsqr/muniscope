@@ -1,6 +1,7 @@
 from enum import Enum
 from dataclasses import dataclass, field
 import re
+from warnings import warn
 
 ###################
 # Because the outline structure of most legal codes is so simple, it's feasible
@@ -119,6 +120,7 @@ class StateMachineParser:
                 print(f"{' ' * 2 * match.level.value}{match.level.name} heading: {match.enumeration} {match.heading_text}")
 
 ##################################################
+## Parsing
 ## FIXME: consider moving to a separate llm  tools module?
 
 import marvin
@@ -211,6 +213,7 @@ def infer_level_names(patterns: dict[Level, HeadingPattern]) -> dict[Level, str]
 class Jurisdiction:
     name: str
     patterns: dict[Level, HeadingPattern]
+    level_names: dict[Level, str]
     source_local: str = ''
     source_url: str = ''
     raw_text: str = ''
@@ -247,3 +250,396 @@ def summarize_chunks(document: list[Segment]):
     for segment in document:
         for i, chunk in enumerate(segment.chunks):
             print(f"{segment.level} chunk {i}: {len(chunk)} characters")
+
+##################################################
+## Embeddings
+
+EMBEDDING_MODEL = "text-embedding-3-small"
+
+def create_embedding(text: str, model=EMBEDDING_MODEL) -> list[float]:
+    """Create an embedding for a block of text."""
+    client = OpenAI()
+    response = client.embeddings.create(input=[text], model=model)
+    return response.data[0].embedding
+
+##################################################
+## Uploading to database
+
+from psycopg import connect
+
+EMBEDDING_LENGTH = len(create_embedding("test"))
+
+def connection(db: dict):
+    return connect(
+        dbname=db['dbname'],
+        host=db['host'],
+        port=db['port'],
+        autocommit=True
+    )
+
+def upload(dbinfo, jurisdiction: Jurisdiction) -> None:
+    ## FIXME: update for new schema
+    return
+#    if len(jurisdiction.document) > 0:
+#        with connection() as conn:
+#            with conn.cursor() as cursor:
+#                cursor.execute(
+#                    """
+#                    INSERT INTO muni (
+#                        jurisdiction,
+#                        L1_ref, L1_heading,
+#                        L2_ref, L2_heading,
+#                        L3_ref, L3_heading,
+#                        L4_ref, L4_heading,
+#                        segment,
+#                        text,
+#                        embedding
+#                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+#                    """,
+#                    (
+                    #    "Chicago",
+                    #    references.get("title", ""),   headings.get("title", ""),   # L1
+                    #    references.get("chapter", ""), headings.get("chapter", ""), # L2
+                    #    references.get("article", ""), headings.get("article", ""), # L3
+                    #    references.get("section", ""), headings.get("section", ""), # L3
+                    #    0, # can add break-down segments later for large text blocks
+                    #    node.text,
+                    #    node_embedding(node),
+#                    )
+#                )
+
+##################################################
+## Associations
+
+LANGUAGE_MODEL = "gpt-4o"
+CONTEXT_WINDOW = 128000
+
+def clean(s: str) -> str:
+    return ''.join([c for c in s if c.isalpha()])
+
+CONTEXT_TYPES = {
+    'rule': 'Statement of a rule, obligation, or prohibition',
+    'penalty': 'Penalties for violations of rules specified in other parts of the code',
+    'definition': 'Definition of terms used in other parts of the code',
+    'interpretation': 'Guidance about interpretation of language or rules, other than definitions',
+    'date': 'Effective dates of rules in the document or enacting legistlation, or termination dates',
+    'other': 'Any other type of context not covered by the above categories',
+    }
+
+def classify_context(text: str, headings: dict[str, str], model=LANGUAGE_MODEL) -> str | None:
+    """Determines the nature of the text among predetermined CONTEXT_TYPES.keys().
+    Args:
+        text: a block of text taken from a municipal code or ordinance
+        headings: a dict of headings from the top of the code hierarchy to the supplied text
+        model: the name of the OpenAI language model to use
+    Returns:
+        A single word classification, or None upon failure
+    """
+    client = OpenAI()
+
+    heading = next(reversed(list(headings.values()))) # last value in dict
+
+    fmt_string = '\n'.join( [f" * '{k}': {v}" for k, v in CONTEXT_TYPES.items()] )
+
+    system_prompt = f"""
+You will be given a text block, which may provide context about other parts of
+the document (a municipal code or ordinance) from which it was taken.
+
+Your task is to classify the text block. Your response should be a single word
+from the following list, choosing the best fit according to the explanation
+provided on each line:
+
+{fmt_string}
+"""
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"{heading}\n{text}"}
+        ],
+        temperature=0.7, # from OpenAI prompt examples page for similar prompts
+        max_tokens=5,
+        top_p=1,
+    )
+    response = response.choices[0].message.content
+    if response is not None:
+        response = clean(response)
+        if response in CONTEXT_TYPES:
+            return response
+
+    warn(f'LLM FAILED TO CLASSIFY CONTEXT. Response: {response} not in {list(CONTEXT_TYPES.keys())}')
+    return None
+
+
+def context_scope(text: str, headings: dict[str, str], context_type: str, model=LANGUAGE_MODEL) -> str | None:
+    """Finds the scope of the supplied context.
+    Args:
+        text: a block of text taken from a municipal code or ordinance
+        headings: a dict of headings from the top of the code hierarchy to the supplied text
+        context_type: as from classify_context(...)
+        model: the name of the OpenAI language model to use
+    Returns:
+        A single word scope, from among headings.keys(), or None upon failure
+    """
+    assert context_type in CONTEXT_TYPES.keys()
+    if context_type == 'rule': return 'global'
+
+    client = OpenAI()
+
+    heading = next(reversed(list(headings.values()))) # last value in dict
+    hierarchy = ", ".join(list(headings.keys()))
+ 
+    system_prompt = f"""
+You will be given a text block, which may provide context about other parts of
+the document (a municipal code or ordinance) from which it was taken.
+
+Assume that the text block has been classified as '{context_type}': '{CONTEXT_TYPES[context_type]}'.
+
+Your task is to describe the scope of the context provided by this text block within
+the document. The document is organized according to the following section hierarchy: {hierarchy}.
+The context may also be globabl, applying to the entire code, regulation, or ordinance.
+
+Your response should be a single-word description of the scope, using the terms 
+provided in the section hierarchy above. If the scope is the entire code, regulation, or ordinance,
+return 'global'. If the scope includes a range of segments at a particular level of the
+hierarchy (e.g., 'sections 5-10'), return the next level up (e.g., 'chapter') to cover all of them.
+If the scope is not clear, or the block of text does not appear to relate to
+definitions, return 'unclear'.
+    
+Example: if the text begins 'for the purposes of this Code', the scope is 'global'.
+
+Example: if the text begins 'for any section of this Code', the scope is 'global'
+because the context applies to the entire Code.
+
+Example: if the text begins 'for the purposes of this section', the scope is 'section'.
+    
+Example: if the text begins 'for the purposes of sections A through F', the scope is 'chapter'
+(assuming 'chapter' is above 'section' in the hierarchy) because the text covers a range of sections.
+"""
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"{heading}\n{text}"}
+        ],
+        temperature=0.7, # from OpenAI prompt examples page for similar prompts
+        max_tokens=5,
+        top_p=1,
+    )
+    response = response.choices[0].message.content
+    if response is not None:
+        response = clean(response)
+        if response in headings or response == 'global':
+            return response
+
+    warn(f'LLM FAILED TO CLASSIFY SCOPE. Response: {response} not in {list(headings.keys())}')
+    return None
+
+
+def analyze_context(text: str, headings: dict[str, str], model=LANGUAGE_MODEL) -> tuple[str, str] | None:
+    """Given a block of text and headings, determines the type of context and its scope.
+    Args:
+        text: a block of text
+        headings: a dict of headings that define the document hierarchy
+        model: the OpenAI language model to use
+    Returns:
+        A tuple consisting of the type of context (e.g., penalty, effective date, interpretation)
+        followed by the scope (section, chapter, etc.). Returns None on failure.
+    """
+    context_type = classify_context(text, headings, model)
+    if context_type is None:
+        return None
+    scope = context_scope(text, headings, context_type, model)
+    if scope is None:
+        return None
+    return context_type, scope
+
+
+def is_relevant(text: str, query: str, threshold: int = 4, model: str = LANGUAGE_MODEL) -> bool:
+    client = OpenAI()
+
+    system_prompt = """You will be given a text block and a query. Your task is
+to determine whether the text block is relevant to the query. Please respond
+with a single integer from 1 to 5 (inclusive), where 1 means 'the text is not
+related to, and does not help to answer, the query', 5 means 'the text is
+clearly and related to, and helps to directly answer, the query', and
+intermediate values represent degrees of relevance in between. 
+"""
+    prompt = f"""
+Text block: {text}
+
+Query: {query}
+
+Your response (1, 2, 3, 4, or 5):
+"""
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.7,
+        max_tokens=2,
+        top_p=1
+    )
+    response = response.choices[0].message.content
+    if response is not None:
+        try:
+            if int(response) >= threshold: return True
+        except ValueError as e:
+            print(f'WARNING: cannot convert response {response} to integer. Error: {e}')
+    
+    return False
+
+# Go through rows in the muni database and identify definitions
+
+sql_select = """
+    SELECT  id,
+        L1_ref, L1_heading,
+        L2_ref, L2_heading,
+        L3_ref, L3_heading,
+        L4_ref, L4_heading,
+        text
+    FROM muni;
+    """
+
+sql_unique = """
+    BEGIN
+        IF NOT EXISTS (
+            SELECT FROM pg_constraint
+            WHERE conname = 'unique_associations')
+            AND   conrelid = 'muni_associations'::regclass
+        ) 
+        THEN
+            ALTER TABLE muni_associations
+            ADD CONSTRAINT unique_associations UNIQUE (jurisdiction, association, left_id, right_id);
+        END IF;
+    END;
+    """
+
+sql_assoc = """
+    INSERT INTO muni_associations (jurisdiction, association, left_id, right_id)
+    VALUES (%s, %s, %s, %s)
+    ON CONFLICT (jurisdiction, association, left_id, right_id) DO NOTHING;
+    """
+
+def scope_map(scope):
+    """For a given scope, what are the columns in muni that need to match?"""
+    table = {'global': ['jurisdiction'],
+             'title': ['jurisdiction', 'L1_ref'],
+             'chapter': ['jurisdiction', 'L1_ref', 'L2_ref'],
+             'article': ['jurisdiction', 'L1_ref', 'L2_ref', 'L3_ref'],
+             'section': ['jurisdiction', 'L1_ref', 'L2_ref', 'L3_ref', 'L4_ref']
+             }
+    if scope not in table.keys():
+        return None
+    return table[scope]
+
+
+def set_associations(conn, id_, scope, context_type):
+    """Set associations with a row in muni with all rows matching the scope.
+    Args:
+        conn: a connection to the database
+        id_: the id of the row to associate
+        scope: the scope of the association (e.g. 'title', 'chapter', 'article', 'section')
+        context_type: the type of association (e.g. 'definition')
+    """
+    with conn.cursor() as cursor:
+        # get the jurisdiction and the references
+        cursor.execute(f"SELECT jurisdiction, L1_ref, L2_ref, L3_ref, L4_ref FROM muni WHERE id = {id_}")
+        jurisdiction, L1_ref, L2_ref, L3_ref, L4_ref = cursor.fetchone()
+        # get the columns that need to match
+        columns = scope_map(scope)
+        if not columns:
+            return
+        # get the rows that match the scope
+        match_str = ' AND '.join([f"{col} = '{val}'" for col, val in zip(columns, [jurisdiction, L1_ref, L2_ref, L3_ref, L4_ref])])
+        cursor.execute(f"SELECT id FROM muni WHERE {match_str} AND id != {id_}")
+        rows = cursor.fetchall()
+        # set the associations
+        for row in rows:
+            cursor.execute(sql_assoc, (jurisdiction, context_type, id_, row[0]))
+
+def find_associations(conn, jurisdiction):
+    return
+    ## FIXME: update for new schema
+    allowed_types = ['penalty', 'definition', 'interpretation', 'date']
+    with conn.cursor() as cursor:
+        cursor.execute(sql_select)
+        rows = cursor.fetchall()
+        for row in rows:
+            id_, L1_ref, L1_heading, L2_ref, L2_heading, L3_ref, L3_heading, L4_ref, L4_heading, text = row
+            headings = {'title': L1_heading, 'chapter': L2_heading, 'article': L3_heading, 'section': L4_heading}
+            r = analyze_context(text, headings, model='gpt-4')
+            if r:
+                context_type, scope = r
+                if context_type in allowed_types:
+                    print(f"* Setting associations for id {id_}")
+                    print(f"  Context type: {context_type}; Scope: {scope}")
+                    print("  --> %s ..." % text[:80].replace('\n', ' '))
+                    set_associations(conn, id_, scope, context_type)
+
+##################################################
+## Querying
+
+def simple_semantic_query(conn, query, limit=10):
+    query_embedding = create_embedding(query)
+    with conn.cursor() as cursor:
+        sql = """
+        SELECT id, L4_heading, text
+        FROM muni
+        WHERE jurisdiction = 'Chicago'
+        ORDER BY embedding <=> %s
+        LIMIT %s;
+        """
+        cursor.execute(sql, (str(query_embedding), limit))
+        return cursor.fetchall()
+        
+def simple_full_text_query(conn, query, limit=10):
+    with conn.cursor() as cursor:
+        sql = """
+        WITH tsq AS (
+            SELECT to_tsquery('english', %s) AS search
+            )
+        SELECT id, L4_heading, text
+        FROM muni, tsq
+        WHERE jurisdiction = 'Chicago'
+        AND textsearchable @@ tsq.search
+        ORDER BY ts_rank_cd(textsearchable, tsq.search)
+        LIMIT %s;
+        """
+        cursor.execute(sql, (query, limit))
+        return cursor.fetchall()
+
+# Now we do a more complicated hybrid search, borrowing and adapting from 
+# https://github.com/pgvector/pgvector-python/blob/master/examples/hybrid_search_rrf.py
+
+def hybrid_query(conn, query, limit=10):
+    embedding = create_embedding(query)
+
+    sql = """
+    WITH semantic_search AS (
+        SELECT id, L4_heading, RANK () OVER (ORDER BY embedding <=> %(embedding)s) AS rank
+        FROM muni
+        ORDER BY embedding <=> %(embedding)s
+        LIMIT 20
+    ),
+    keyword_search AS (
+        SELECT id, L4_heading, RANK () OVER (ORDER BY ts_rank_cd(textsearchable, query) DESC)
+        FROM muni, plainto_tsquery('english', %(query)s) query
+        WHERE textsearchable @@ query
+        ORDER BY ts_rank_cd(textsearchable, query) DESC
+        LIMIT 20
+    )
+    SELECT
+        COALESCE(semantic_search.id, keyword_search.id) AS id,
+        COALESCE(1.0 / (%(k)s + semantic_search.rank), 0.0) +
+        COALESCE(1.0 / (%(k)s + keyword_search.rank), 0.0) AS score,
+        COALESCE(semantic_search.L4_heading, keyword_search.L4_heading) AS L4_heading
+    FROM semantic_search
+    FULL OUTER JOIN keyword_search ON semantic_search.id = keyword_search.id
+    ORDER BY score DESC
+    LIMIT %(limit)s;
+    """
+    result = conn.execute(sql, {'query': query, 'embedding': str(embedding), 'limit': limit, 'k': 60})
+    return result.fetchall()
