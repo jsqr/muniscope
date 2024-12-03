@@ -128,7 +128,7 @@ from openai import OpenAI
 
 openai_client = OpenAI()
 
-def llm(prompt: str, system: str = ""):
+def llm(prompt: str, system: str = "", model: str = "gpt-4o") -> str | None:
     chat_completion = openai_client.chat.completions.create(
         messages=[
             {
@@ -140,12 +140,12 @@ def llm(prompt: str, system: str = ""):
                 "content": prompt
             }
         ],
-        model="gpt-4o",
+        model=model,
     )
     return chat_completion.choices[0].message.content
 
 @marvin.fn
-def infer_regex(examples: list[str]) -> str:
+def infer_regex(examples: list[str]) -> str: # FIXME: do marvin functions return None on failure?
     """
     Return a regular expression matching the provided examples, which are the first
     lines of headings in a document. Return a string representing the regular expression,
@@ -206,6 +206,13 @@ def infer_level_name(pattern: HeadingPattern) -> str:
 def letters_only(s: str) -> str:
     return ''.join(c for c in s if c.isalpha())
 
+def remove_newlines(s: str) -> str:
+    return re.sub(r'[\n\r]', ' ', s)
+
+def clean_text(s: str) -> str:
+    """Replace non-word characters with spaces."""
+    return re.sub(r'[^\w]', ' ', s)
+
 def infer_level_names(patterns: dict[Level, HeadingPattern]) -> dict[Level, str]:
     return {k: letters_only(infer_level_name(v)) for k, v in patterns.items()}
 
@@ -234,7 +241,7 @@ class Jurisdiction:
             print(f"Error reading {self.source_local}: {e}")
 
     def parse(self):
-        self.parser = StateMachineParser(self.name, self.patterns)
+        self.parser = StateMachineParser(f"{self.name} Code", self.patterns)
         self.document = self.parser.parse(self.raw_text)
 
     def chunkify(self, n: int = 1000):
@@ -243,15 +250,16 @@ class Jurisdiction:
                 continue
             segment.chunkify(n)
 
-    def show_outline(self):
-        self.parser.summarize_matches(self.raw_text)
-
     def summarize(self):
         for segment in self.document:
             if len(segment.paragraphs) == 0:
                 continue
             text = '\n'.join(segment.paragraphs)
-            print(f"{segment.level}: {len(segment.chunks)} chunks, {len(segment.paragraphs)} paragraphs, {len(text)} characters")
+            heading = segment.headings[segment.level]
+            level_name = self.level_names[segment.level]
+            print(f"{' ' * 4 * segment.level.value}{segment.level.name} {level_name}", end='')
+            print(f" {heading.enumeration} ({clean_text(heading.heading_text)})", end='') if heading else print()
+            print(f": {len(segment.chunks)} chunks, {len(segment.paragraphs)} paragraphs, {len(text)} characters")
 
 ##################################################
 ## Embeddings
