@@ -123,6 +123,9 @@ class StateMachineParser:
 ## Parsing
 ## FIXME: consider moving to a separate llm  tools module?
 
+LANGUAGE_MODEL = "gpt-4o"
+CONTEXT_WINDOW = 128000
+
 import marvin
 from openai import OpenAI
 
@@ -206,15 +209,11 @@ def infer_level_name(pattern: HeadingPattern) -> str:
 def letters_only(s: str) -> str:
     return ''.join(c for c in s if c.isalpha())
 
-def remove_newlines(s: str) -> str:
-    return re.sub(r'[\n\r]', ' ', s)
-
-def clean_text(s: str) -> str:
-    """Replace non-word characters with spaces."""
-    return re.sub(r'[^\w]', ' ', s)
-
 def infer_level_names(patterns: dict[Level, HeadingPattern]) -> dict[Level, str]:
     return {k: letters_only(infer_level_name(v)) for k, v in patterns.items()}
+
+def remove_newlines(s: str) -> str:
+    return re.sub(r'[\n\r]', ' ', s)
 
 @dataclass
 class Jurisdiction:
@@ -226,11 +225,14 @@ class Jurisdiction:
     raw_text: str = ''
     parser: StateMachineParser | None = None
     document: list[Segment] = field(default_factory=list)
-    autoload: bool = True    
+    autoload: bool = True
+    autoparse: bool = False
 
     def __post_init__(self):
         if self.autoload:
             self.load()
+        if self.autoparse:
+            self.parse()
 
     def load(self):
         """Loads the text of local code from file (source_local)."""
@@ -258,7 +260,7 @@ class Jurisdiction:
             heading = segment.headings[segment.level]
             level_name = self.level_names[segment.level]
             print(f"{' ' * 4 * segment.level.value}{segment.level.name} {level_name}", end='')
-            print(f" {heading.enumeration} ({clean_text(heading.heading_text)})", end='') if heading else print()
+            print(f" {heading.enumeration} ({remove_newlines(heading.heading_text)})", end='') if heading else print()
             print(f": {len(segment.chunks)} chunks, {len(segment.paragraphs)} paragraphs, {len(text)} characters")
 
 ##################################################
@@ -321,12 +323,6 @@ def upload(dbinfo, jurisdiction: Jurisdiction) -> None:
 ##################################################
 ## Associations
 
-LANGUAGE_MODEL = "gpt-4o"
-CONTEXT_WINDOW = 128000
-
-def clean(s: str) -> str:
-    return ''.join([c for c in s if c.isalpha()])
-
 CONTEXT_TYPES = {
     'rule': 'Statement of a rule, obligation, or prohibition',
     'penalty': 'Penalties for violations of rules specified in other parts of the code',
@@ -373,7 +369,7 @@ provided on each line:
     )
     response = response.choices[0].message.content
     if response is not None:
-        response = clean(response)
+        response = letters_only(response)
         if response in CONTEXT_TYPES:
             return response
 
@@ -438,7 +434,7 @@ Example: if the text begins 'for the purposes of sections A through F', the scop
     )
     response = response.choices[0].message.content
     if response is not None:
-        response = clean(response)
+        response = letters_only(response)
         if response in headings or response == 'global':
             return response
 
