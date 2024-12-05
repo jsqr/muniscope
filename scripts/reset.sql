@@ -53,7 +53,7 @@ CREATE TABLE segments (
 CREATE TABLE codes (
        code_id SERIAL PRIMARY KEY,
        title TEXT, -- e.g., 'Municipal Code of Chicago'
-       jurisdiction TEXT, -- e.g., 'Chicago' (there may be multiple codes per jurisdiction)
+       jurisdiction TEXT UNIQUE, -- e.g., 'Chicago' (there may be multiple codes per jurisdiction)
        H1_name TEXT,    H1_pattern TEXT, -- e.g., 'TITLE', '^TITLE\s+[IVXLCDM]+$'
        H2_name TEXT,    H2_pattern TEXT,
        H3_name TEXT,    H3_pattern TEXT,

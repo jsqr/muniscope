@@ -1,4 +1,4 @@
-from enum import Enum
+from enum import Enum, unique
 from dataclasses import dataclass, field
 import re
 from warnings import warn
@@ -11,29 +11,34 @@ from warnings import warn
 # because in some cases outlines skip levels, which would complicate the formal
 # grammar.
 
-class Level(Enum):
-    H0 = 0 # top level (initial state)
-    H1 = 1
-    H2 = 2
-    H3 = 3
+#@unique
+#class Level(Enum):
+#    H0 = 0 # top level (initial state)
+#    H1 = 1
+#    H2 = 2
+#    H3 = 3
+#    H4 = 4
+#    H5 = 5
+
+LEVELS = [0, 1, 2, 3, 4, 5]
 
 @dataclass
 class HeadingPattern:
-    level: Level
+    level: int #Level
     regex: str
     multi_line: bool # whether the heading spans multiple lines
 
 @dataclass
 class Heading:
-    level: Level
-    # heading_type: str # e.g. "section", "subsection", "article", "chapter"
+    level: int #Level
+    # level_name: str # e.g. "Title", "Chapter", "Article", "Section"
     enumeration: str # number or letter (e.g. "1", "a", "i", "A", "XVII")
     heading_text: str
 
 @dataclass
 class Segment:
-    level: Level
-    headings: dict[Level, Heading|None] = field(default_factory=dict)
+    level: int #Level
+    headings: dict[int, Heading] = field(default_factory=dict)
     paragraphs: list[str] = field(default_factory=list) # list of paragraphs
     chunks: list[str] = field(default_factory=list) # sized for embeddings
 
@@ -60,7 +65,7 @@ def split_paragraph(paragraph: str) -> tuple[str, str]:
     rest_of_paragraph = lines[1] if len(lines) > 1 else ''
     return first_line, rest_of_paragraph
 
-def match_heading(paragraph: str, patterns: dict[Level, HeadingPattern]) -> Heading | None:
+def match_heading(paragraph: str, patterns: dict[int, HeadingPattern]) -> Heading | None:
     """For each patern in `patterns`, check if the paragraph matches (e.g., pattern '^Chapter [IVXLC]+'
     matches 'Chapter VII'). If a match is found, return a Heading object. Otherwise, return None."""
     
@@ -79,17 +84,17 @@ def match_heading(paragraph: str, patterns: dict[Level, HeadingPattern]) -> Head
                 return Heading(level=level, enumeration=match.group(1), heading_text=match.group(2))
 
 class StateMachineParser:
-    def __init__(self, document_name: str, heading_patterns: dict[Level, HeadingPattern]):
+    def __init__(self, document_name: str, heading_patterns: dict[int, HeadingPattern]):
         self.document = []
-        self.heading_names = {Level.H0: document_name, Level.H1: None, Level.H2: None, Level.H3: None}
+        self.document_name = document_name # heading_names = {Level.H0: document_name}
         self.patterns = heading_patterns
-        self.state = Level.H0
+        self.state = 0 #Level.H0
 
     def parse(self, text):
         paragraphs = text.split('\n\n')
 
-        segment_headings = {Level.H0: self.heading_names[Level.H0]}
-        segment = Segment(level=Level.H0, headings=segment_headings, paragraphs=[]) # preamble
+        segment_headings = {0: Heading(0, '', self.document_name)}
+        segment = Segment(level=0, headings=segment_headings, paragraphs=[]) # preamble
 
         for paragraph in paragraphs:
 
@@ -106,8 +111,8 @@ class StateMachineParser:
             self.state = match.level
             new_headings = segment.headings.copy()
             new_headings[match.level] = match
-            for level in Level: # have to delete the headings at higher levels in case of skips later
-                if level.value in new_headings and level.value > match.level.value:
+            for level in LEVELS: # have to delete the headings at higher levels in case of skips later
+                if level in new_headings and level > match.level:
                     del new_headings[level]
             segment = Segment(level=self.state, headings=new_headings, paragraphs=[]) # start a new segment
         return self.document
@@ -117,7 +122,7 @@ class StateMachineParser:
         for paragraph in paragraphs:
             match = match_heading(paragraph, self.patterns)
             if match:
-                print(f"{' ' * 4 * match.level.value}{match.level.name} heading: {match.enumeration} {match.heading_text}")
+                print(f"{' ' * 4 * match.level}{match.level} heading: {match.enumeration} {match.heading_text}")
 
 ##################################################
 ## Parsing
@@ -190,7 +195,7 @@ def infer_regex_stripped(examples: list[str]) -> str:
 def is_multi_line(examples: list[str]) -> bool:
     return any('\n' in example.strip() for example in examples)
 
-def infer_heading_patterns(example_headings: dict[Level, list[str]]) -> dict[Level, HeadingPattern]:
+def infer_heading_patterns(example_headings: dict[int, list[str]]) -> dict[int, HeadingPattern]:
     """Infer heading patterns from examples. Return a dictionary mapping levels to
     HeadingPattern objects."""
     return {k: HeadingPattern(level=k, regex=infer_regex_stripped(v), multi_line=is_multi_line(v))
@@ -209,7 +214,7 @@ def infer_level_name(pattern: HeadingPattern) -> str:
 def letters_only(s: str) -> str:
     return ''.join(c for c in s if c.isalpha())
 
-def infer_level_names(patterns: dict[Level, HeadingPattern]) -> dict[Level, str]:
+def infer_level_names(patterns: dict[int, HeadingPattern]) -> dict[int, str]:
     return {k: letters_only(infer_level_name(v)) for k, v in patterns.items()}
 
 def remove_newlines(s: str) -> str:
@@ -218,8 +223,9 @@ def remove_newlines(s: str) -> str:
 @dataclass
 class Jurisdiction:
     name: str
-    patterns: dict[Level, HeadingPattern]
-    level_names: dict[Level, str]
+    title: str
+    patterns: dict[int, HeadingPattern]
+    level_names: dict[int, str]
     source_local: str = ''
     source_url: str = ''
     raw_text: str = ''
@@ -259,7 +265,7 @@ class Jurisdiction:
             text = '\n'.join(segment.paragraphs)
             heading = segment.headings[segment.level]
             level_name = self.level_names[segment.level]
-            print(f"{' ' * 4 * segment.level.value}{segment.level.name} {level_name}", end='')
+            print(f"{' ' * 4 * segment.level}L{segment.level} {level_name}", end='')
             print(f" {heading.enumeration} ({remove_newlines(heading.heading_text)})", end='') if heading else print()
             print(f": {len(segment.chunks)} chunks, {len(segment.paragraphs)} paragraphs, {len(text)} characters")
 
@@ -289,8 +295,51 @@ def connection(db: dict):
         autocommit=True
     )
 
-def upload(dbinfo, jurisdiction: Jurisdiction) -> None:
-    ## FIXME: update for new schema
+def fill_in(place: Jurisdiction) -> tuple[dict[int, str], dict[int, HeadingPattern]]:
+    """Fill in missing level names and patterns with blanks."""
+    level_names = {}
+    patterns = {}
+    for level in LEVELS:
+        if level in place.level_names:
+            level_names[level] = place.level_names[level]
+        else:
+            level_names[level] = ''
+        if level in place.patterns:
+            patterns[level] = place.patterns[level]
+        else:
+            patterns[level] = HeadingPattern(level=level, regex='', multi_line=False)
+    return level_names, patterns
+
+def upload(db: dict, jurisdiction: Jurisdiction) -> None:
+    """Upload (1) metadata about the jurisdiction, to the `codes` table, (2) segments of the code,
+    to the `segments` table, and (3) chunks and their embedding vectors, to the `chunks` table."""
+    
+    ## Jurisdiction metadata
+    level_names, patterns = fill_in(jurisdiction)
+    with connection(db) as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO codes (title, jurisdiction,
+                H1_name, H1_pattern,
+                H2_name, H2_pattern,
+                H3_name, H3_pattern,
+                H4_name, H4_pattern,
+                H5_name, H5_pattern)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (jurisdiction) DO NOTHING;
+                """,
+                (jurisdiction.title, jurisdiction.name,
+                level_names[1], patterns[1].regex,
+                level_names[2], patterns[2].regex,
+                level_names[3], patterns[3].regex,
+                level_names[4], patterns[4].regex,
+                level_names[5], patterns[5].regex)
+            )
+    ## Segments
+
+    ## Chunks
+
     return
 #    if len(jurisdiction.document) > 0:
 #        with connection() as conn:
