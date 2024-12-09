@@ -265,7 +265,7 @@ class Jurisdiction:
             text = '\n'.join(segment.paragraphs)
             heading = segment.headings[segment.level]
             level_name = self.level_names[segment.level]
-            print(f"{' ' * 4 * segment.level}L{segment.level} {level_name}", end='')
+            print(f"{' ' * 4 * segment.level}H{segment.level} {level_name}", end='')
             print(f" {heading.enumeration} ({remove_newlines(heading.heading_text)})", end='') if heading else print()
             print(f": {len(segment.chunks)} chunks, {len(segment.paragraphs)} paragraphs, {len(text)} characters")
 
@@ -310,11 +310,8 @@ def fill_in(place: Jurisdiction) -> tuple[dict[int, str], dict[int, HeadingPatte
             patterns[level] = HeadingPattern(level=level, regex='', multi_line=False)
     return level_names, patterns
 
-def upload(db: dict, jurisdiction: Jurisdiction) -> None:
-    """Upload (1) metadata about the jurisdiction, to the `codes` table, (2) segments of the code,
-    to the `segments` table, and (3) chunks and their embedding vectors, to the `chunks` table."""
-    
-    ## Jurisdiction metadata
+def upload_code(db: dict, jurisdiction: Jurisdiction) -> None:
+    """Upload metadata about the jurisdiction to the `codes` table."""
     level_names, patterns = fill_in(jurisdiction)
     with connection(db) as conn:
         with conn.cursor() as cursor:
@@ -336,38 +333,47 @@ def upload(db: dict, jurisdiction: Jurisdiction) -> None:
                 level_names[4], patterns[4].regex,
                 level_names[5], patterns[5].regex)
             )
-    ## Segments
 
-    ## Chunks
+def upload_segments(db: dict, jurisdiction: Jurisdiction) -> None:
+    """Upload segments of the code to the `segments` table."""
+    with connection(db) as conn:
+        with conn.cursor() as cursor:
+            for segment in jurisdiction.document:
+                headings = [segment.headings.get(i, None) for i in LEVELS]
+                heading_enumerations = [heading.enumeration if heading else None for heading in headings]
+                heading_texts = [heading.heading_text if heading else None for heading in headings]
+                cursor.execute(
+                    """
+                    INSERT INTO segments (code_id, segment_level,
+                        H1_enumeration, H1_text,
+                        H2_enumeration, H2_text,
+                        H3_enumeration, H3_text,
+                        H4_enumeration, H4_text,
+                        H5_enumeration, H5_text,
+                        content)
+                    VALUES ((SELECT code_id FROM codes WHERE jurisdiction=%s),
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (jurisdiction.name, segment.level,
+                    heading_enumerations[1], heading_texts[1],
+                    heading_enumerations[2], heading_texts[2],
+                    heading_enumerations[3], heading_texts[3],
+                    heading_enumerations[4], heading_texts[4],
+                    heading_enumerations[5], heading_texts[5],
+                    '\n\n'.join(segment.paragraphs))
+                )
 
+def upload_chunks(db: dict, jurisdiction: Jurisdiction) -> None:
+    """Upload chunks and their embedding vectors to the `chunks` table."""
     return
-#    if len(jurisdiction.document) > 0:
-#        with connection() as conn:
-#            with conn.cursor() as cursor:
-#                cursor.execute(
-#                    """
-#                    INSERT INTO muni (
-#                        jurisdiction,
-#                        L1_ref, L1_heading,
-#                        L2_ref, L2_heading,
-#                        L3_ref, L3_heading,
-#                        L4_ref, L4_heading,
-#                        segment,
-#                        text,
-#                        embedding
-#                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
-#                    """,
-#                    (
-                    #    "Chicago",
-                    #    references.get("title", ""),   headings.get("title", ""),   # L1
-                    #    references.get("chapter", ""), headings.get("chapter", ""), # L2
-                    #    references.get("article", ""), headings.get("article", ""), # L3
-                    #    references.get("section", ""), headings.get("section", ""), # L3
-                    #    0, # can add break-down segments later for large text blocks
-                    #    node.text,
-                    #    node_embedding(node),
-#                    )
-#                )
+
+def upload(db: dict, jurisdiction: Jurisdiction) -> None:
+    """Upload (1) metadata about the jurisdiction, to the `codes` table, (2) segments of the code,
+    to the `segments` table, and (3) chunks and their embedding vectors, to the `chunks` table."""
+    upload_code(db, jurisdiction)
+    upload_segments(db, jurisdiction)
+    upload_chunks(db, jurisdiction)
+    return
 
 ##################################################
 ## Associations

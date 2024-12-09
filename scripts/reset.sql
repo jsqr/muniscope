@@ -29,8 +29,9 @@ CREATE TABLE associations (
 CREATE TABLE chunks (
        chunk_id SERIAL PRIMARY KEY,
        segment_id INTEGER, -- foreign key to citable segment
-       begin_idx INTEGER, -- index of start of segment within provision text
-       end_idx INTEGER, -- index of end of segment
+       chunk_idx INTEGER, -- index of chunk within segment
+       -- begin_idx INTEGER, -- index of start of segment within provision text
+       -- end_idx INTEGER, -- index of end of segment
        content VARCHAR(2000), -- FIXME: replace with dynamic sql to allow tuning
        embedding VECTOR(1536) -- FIXME: see above (1536 for text-embedding-3-small)
 );
@@ -40,11 +41,12 @@ CREATE TABLE chunks (
 CREATE TABLE segments (
        segment_id SERIAL PRIMARY KEY,
        code_id INTEGER, -- foreign key to code
-       H1 TEXT,
-       H2 TEXT,
-       H3 TEXT,
-       H4 TEXT,
-       H5 TEXT, -- lower levels may be unused in some codes
+       segment_level INTEGER, -- 1-5, with 1 being the highest level
+       H1_enumeration TEXT, H1_text TEXT,
+       H2_enumeration TEXT, H2_text TEXT,
+       H3_enumeration TEXT, H3_text TEXT,
+       H4_enumeration TEXT, H4_text TEXT,
+       H5_enumeration TEXT, H5_text TEXT, -- lower levels may be unused in some codes
        content TEXT,
        search_vector tsvector -- for full-text search
 );
@@ -68,11 +70,11 @@ CREATE TABLE codes (
 CREATE OR REPLACE FUNCTION segments_search_vector_update() RETURNS trigger AS $$
 BEGIN
   NEW.search_vector :=
-    to_tsvector('english', COALESCE(NEW.H1, '')) ||
-    to_tsvector('english', COALESCE(NEW.H2, '')) ||
-    to_tsvector('english', COALESCE(NEW.H3, '')) ||
-    to_tsvector('english', COALESCE(NEW.H4, '')) ||
-    to_tsvector('english', COALESCE(NEW.H5, '')) ||
+    to_tsvector('english', COALESCE(NEW.H1_text, '')) ||
+    to_tsvector('english', COALESCE(NEW.H2_text, '')) ||
+    to_tsvector('english', COALESCE(NEW.H3_text, '')) ||
+    to_tsvector('english', COALESCE(NEW.H4_text, '')) ||
+    to_tsvector('english', COALESCE(NEW.H5_text, '')) ||
     to_tsvector('english', COALESCE(NEW.content, ''));
   RETURN NEW;
 END
