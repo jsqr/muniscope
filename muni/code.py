@@ -339,6 +339,8 @@ def upload_segments(db: dict, jurisdiction: Jurisdiction) -> None:
     with connection(db) as conn:
         with conn.cursor() as cursor:
             for segment in jurisdiction.document:
+                if not segment.paragraphs:
+                    continue # skip empty segments (usually part of a table of contents)
                 headings = [segment.headings.get(i, None) for i in LEVELS]
                 heading_enumerations = [heading.enumeration if heading else None for heading in headings]
                 heading_texts = [heading.heading_text if heading else None for heading in headings]
@@ -353,6 +355,7 @@ def upload_segments(db: dict, jurisdiction: Jurisdiction) -> None:
                         content)
                     VALUES ((SELECT code_id FROM codes WHERE jurisdiction=%s),
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING segment_id;
                     """,
                     (jurisdiction.name, segment.level,
                     heading_enumerations[1], heading_texts[1],
@@ -362,9 +365,34 @@ def upload_segments(db: dict, jurisdiction: Jurisdiction) -> None:
                     heading_enumerations[5], heading_texts[5],
                     '\n\n'.join(segment.paragraphs))
                 )
+                retval = cursor.fetchone()
+                if retval:
+                    segment_id = retval[0]
+                else:
+                    warn(f"Failed to upload segment {segment.level} for {jurisdiction.name}")
+                    continue
+                cursor.executemany(
+                    """
+                    INSERT INTO chunks (segment_id, chunk_idx, content)
+                    VALUES (%s, %s, %s)
+                    """,
+                    [(segment_id, i, chunk) for i, chunk in enumerate(segment.chunks)]
+                )
 
 def upload_chunks(db: dict, jurisdiction: Jurisdiction) -> None:
     """Upload chunks and their embedding vectors to the `chunks` table."""
+    with connection(db) as conn:
+        with conn.cursor() as cursor:
+            for segment in jurisdiction.document:
+                for i, chunk in enumerate(segment.chunks):
+                    cursor.execute(
+                        """
+                        INSERT INTO chunks (segment_id, chunk_number, content, embedding)
+                        VALUES ((SELECT segment_id FROM segments WHERE code_id=(SELECT code_id FROM codes WHERE jurisdiction=%s) AND segment_level=%s),
+                        %s, %s, %s)
+                        """,
+                        (jurisdiction.name, segment.level, i, chunk, create_embedding(chunk))
+                    )
     return
 
 def upload(db: dict, jurisdiction: Jurisdiction) -> None:
@@ -372,7 +400,7 @@ def upload(db: dict, jurisdiction: Jurisdiction) -> None:
     to the `segments` table, and (3) chunks and their embedding vectors, to the `chunks` table."""
     upload_code(db, jurisdiction)
     upload_segments(db, jurisdiction)
-    upload_chunks(db, jurisdiction)
+    #upload_chunks(db, jurisdiction)
     return
 
 ##################################################
