@@ -310,11 +310,16 @@ def fill_in(place: Jurisdiction) -> tuple[dict[int, str], dict[int, HeadingPatte
             patterns[level] = HeadingPattern(level=level, regex='', multi_line=False)
     return level_names, patterns
 
-def upload_code(db: dict, jurisdiction: Jurisdiction) -> None:
+def upload_code(db: dict, jurisdiction: Jurisdiction, overwrite: bool = True) -> None:
     """Upload metadata about the jurisdiction to the `codes` table."""
     level_names, patterns = fill_in(jurisdiction)
     with connection(db) as conn:
         with conn.cursor() as cursor:
+            if overwrite:
+                cursor.execute(
+                    "DELETE FROM codes WHERE jurisdiction=%s;",
+                    (jurisdiction.name,)
+                )
             cursor.execute(
                 """
                 INSERT INTO codes (title, jurisdiction,
@@ -334,7 +339,7 @@ def upload_code(db: dict, jurisdiction: Jurisdiction) -> None:
                 level_names[5], patterns[5].regex)
             )
 
-def upload_segments(db: dict, jurisdiction: Jurisdiction) -> None:
+def upload_segments(db: dict, jurisdiction: Jurisdiction, overwrite: bool = True) -> None:
     """Upload segments of the code to the `segments` table."""
     with connection(db) as conn:
         with conn.cursor() as cursor:
@@ -344,6 +349,19 @@ def upload_segments(db: dict, jurisdiction: Jurisdiction) -> None:
                 headings = [segment.headings.get(i, None) for i in LEVELS]
                 heading_enumerations = [heading.enumeration if heading else None for heading in headings]
                 heading_texts = [heading.heading_text if heading else None for heading in headings]
+                if overwrite:
+                    cursor.execute(
+                        """
+                        DELETE FROM segments WHERE code_id=(SELECT code_id FROM codes WHERE jurisdiction=%s)
+                            AND H1_enumeration=%s
+                            AND H2_enumeration=%s
+                            AND H3_enumeration=%s
+                            AND H4_enumeration=%s
+                            AND H5_enumeration=%s;
+                        """,
+                        (jurisdiction.name, heading_enumerations[1], heading_enumerations[2],
+                        heading_enumerations[3], heading_enumerations[4], heading_enumerations[5])
+                    )
                 cursor.execute(
                     """
                     INSERT INTO segments (code_id, segment_level,
@@ -355,6 +373,8 @@ def upload_segments(db: dict, jurisdiction: Jurisdiction) -> None:
                         content)
                     VALUES ((SELECT code_id FROM codes WHERE jurisdiction=%s),
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (code_id, H1_enumeration, H2_enumeration,
+                                H3_enumeration, H4_enumeration, H5_enumeration) DO NOTHING
                     RETURNING segment_id;
                     """,
                     (jurisdiction.name, segment.level,

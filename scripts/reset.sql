@@ -21,7 +21,8 @@ CREATE TABLE associations (
        code_id INTEGER,
        assoc_type assoc_type,
        left_id INTEGER, -- ref to primary provision (e.g., an obligation or prohibition)
-       right_id INTEGER -- ref to associated provision (e.g., list of applicable defs)
+       right_id INTEGER, -- ref to associated provision (e.g., list of applicable defs)
+       CONSTRAINT unique_association UNIQUE (code_id, assoc_type, left_id, right_id)
 );
 
 -- Segments may be longer than the optimal chunk size for an embedding
@@ -33,7 +34,8 @@ CREATE TABLE chunks (
        -- begin_idx INTEGER, -- index of start of segment within provision text
        -- end_idx INTEGER, -- index of end of segment
        content VARCHAR(2000), -- FIXME: replace with dynamic sql to allow tuning
-       embedding VECTOR(1536) -- FIXME: see above (1536 for text-embedding-3-small)
+       embedding VECTOR(1536), -- FIXME: see above (1536 for text-embedding-3-small)
+       CONSTRAINT unique_chunk UNIQUE (segment_id, chunk_idx)
 );
 
 -- 'Segments' here are the smallest citable divisions within the organizational
@@ -48,7 +50,8 @@ CREATE TABLE segments (
        H4_enumeration TEXT, H4_text TEXT,
        H5_enumeration TEXT, H5_text TEXT, -- lower levels may be unused in some codes
        content TEXT,
-       search_vector tsvector -- for full-text search
+       search_vector tsvector, -- for full-text search
+       CONSTRAINT unique_segment UNIQUE (code_id, H1_enumeration, H2_enumeration, H3_enumeration, H4_enumeration, H5_enumeration)
 );
 
 -- A law, code, or ordinance
