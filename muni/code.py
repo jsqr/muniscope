@@ -399,29 +399,33 @@ def upload_segments(db: dict, jurisdiction: Jurisdiction, overwrite: bool = True
                     [(segment_id, i, chunk) for i, chunk in enumerate(segment.chunks)]
                 )
 
-def upload_chunks(db: dict, jurisdiction: Jurisdiction) -> None:
-    """Upload chunks and their embedding vectors to the `chunks` table."""
+def enhance_chunks(db: dict, jurisdiction: Jurisdiction) -> None:
+    """Enhance the chunks in the `chunks` table by prepending the heading info
+    to give the embedding model more context."""
     with connection(db) as conn:
         with conn.cursor() as cursor:
-            for segment in jurisdiction.document:
-                for i, chunk in enumerate(segment.chunks):
-                    cursor.execute(
-                        """
-                        INSERT INTO chunks (segment_id, chunk_number, content, embedding)
-                        VALUES ((SELECT segment_id FROM segments WHERE code_id=(SELECT code_id FROM codes WHERE jurisdiction=%s) AND segment_level=%s),
-                        %s, %s, %s)
-                        """,
-                        (jurisdiction.name, segment.level, i, chunk, create_embedding(chunk))
-                    )
-    return
+            cursor.execute(
+                """
+                UPDATE chunks
+                SET enhanced_content = 
+                    COALESCE(codes.H1_name || ' ' || segments.H1_enumeration || ' ' || segments.H1_text || E'\n', '') ||
+                    COALESCE(codes.H2_name || ' ' || segments.H2_enumeration || ' ' || segments.H2_text || E'\n', '') ||
+                    COALESCE(codes.H3_name || ' ' || segments.H3_enumeration || ' ' || segments.H3_text || E'\n', '') ||
+                    COALESCE(codes.H4_name || ' ' || segments.H4_enumeration || ' ' || segments.H4_text || E'\n', '') ||
+                    COALESCE(codes.H5_name || ' ' || segments.H5_enumeration || ' ' || segments.H5_text || E'\n', '') ||
+                    '\n...\n' || chunks.content || '\n...\n'
+                FROM segments
+                JOIN codes ON segments.code_id = codes.code_id
+                WHERE chunks.segment_id = segments.segment_id;
+                """
+            )
 
 def upload(db: dict, jurisdiction: Jurisdiction) -> None:
     """Upload (1) metadata about the jurisdiction, to the `codes` table, (2) segments of the code,
     to the `segments` table, and (3) chunks and their embedding vectors, to the `chunks` table."""
     upload_code(db, jurisdiction)
     upload_segments(db, jurisdiction)
-    #upload_chunks(db, jurisdiction)
-    return
+    enhance_chunks(db, jurisdiction)
 
 ##################################################
 ## Associations

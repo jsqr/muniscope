@@ -33,7 +33,8 @@ CREATE TABLE chunks (
        chunk_idx INTEGER, -- index of chunk within segment
        -- begin_idx INTEGER, -- index of start of segment within provision text
        -- end_idx INTEGER, -- index of end of segment
-       content VARCHAR(2000), -- FIXME: replace with dynamic sql to allow tuning
+       content TEXT,
+       enhanced_content TEXT, -- Additional context (e.g., headings)
        embedding VECTOR(1536), -- FIXME: see above (1536 for text-embedding-3-small)
        CONSTRAINT unique_chunk UNIQUE (segment_id, chunk_idx)
 );
