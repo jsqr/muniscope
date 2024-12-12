@@ -9,7 +9,6 @@ DROP TABLE IF EXISTS associations CASCADE;
 DROP TYPE IF EXISTS assoc_type CASCADE;
 DROP TABLE IF EXISTS segments;
 DROP TABLE IF EXISTS chunks;
-DROP TABLE IF EXISTS provisions; -- legacy
 DROP TABLE IF EXISTS codes;
 
 -- Track associations among provisions
@@ -69,6 +68,7 @@ CREATE TABLE codes (
 
 -------------------------------------------------------------------
 -- Full-text search using the search_vector column in segments   --
+-- and the enhanced_content column in chunks                     --
 -------------------------------------------------------------------
 
 CREATE OR REPLACE FUNCTION segments_search_vector_update() RETURNS trigger AS $$
@@ -91,3 +91,6 @@ FOR EACH ROW EXECUTE FUNCTION segments_search_vector_update();
 
 -- Create a generalized inverted index
 CREATE INDEX idx_segments_search_vector ON segments USING GIN (search_vector);
+
+-- Do the same for the 'enhanced_content' field in chunks
+CREATE INDEX idx_chunks_search_vector ON chunks USING GIN (to_tsvector('english', enhanced_content));

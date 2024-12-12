@@ -274,18 +274,18 @@ class Jurisdiction:
 
 EMBEDDING_MODEL = "text-embedding-3-small"
 
-def create_embedding(text: str, model=EMBEDDING_MODEL) -> list[float]:
-    """Create an embedding for a block of text."""
+def create_embeddings(texts: list[str], model=EMBEDDING_MODEL) -> list[list[float]]:
+    """Create embeddings for a list of text blocks."""
     client = OpenAI()
-    response = client.embeddings.create(input=[text], model=model)
-    return response.data[0].embedding
+    response = client.embeddings.create(input=texts, model=model)
+    return [embedding.embedding for embedding in response.data]
 
 ##################################################
 ## Uploading to database
 
 from psycopg import connect
 
-EMBEDDING_LENGTH = len(create_embedding("test"))
+EMBEDDING_LENGTH = len(create_embeddings(["test"]))
 
 def connection(db: dict):
     return connect(
@@ -404,6 +404,7 @@ def enhance_chunks(db: dict, jurisdiction: Jurisdiction) -> None:
     to give the embedding model more context."""
     with connection(db) as conn:
         with conn.cursor() as cursor:
+
             cursor.execute(
                 """
                 UPDATE chunks
@@ -413,19 +414,51 @@ def enhance_chunks(db: dict, jurisdiction: Jurisdiction) -> None:
                     COALESCE(codes.H3_name || ' ' || segments.H3_enumeration || ' ' || segments.H3_text || E'\n', '') ||
                     COALESCE(codes.H4_name || ' ' || segments.H4_enumeration || ' ' || segments.H4_text || E'\n', '') ||
                     COALESCE(codes.H5_name || ' ' || segments.H5_enumeration || ' ' || segments.H5_text || E'\n', '') ||
-                    '\n...\n' || chunks.content || '\n...\n'
+                    '...\n' || chunks.content || '\n...\n'
                 FROM segments
                 JOIN codes ON segments.code_id = codes.code_id
                 WHERE chunks.segment_id = segments.segment_id;
                 """
             )
 
+def upload_embeddings(db: dict, jurisdiction: Jurisdiction) -> None:
+    """Create embeddings for the chunks in the `chunks` table."""
+    with connection(db) as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT chunk_id, enhanced_content
+                FROM chunks
+                WHERE segment_id IN (
+                    SELECT segment_id
+                    FROM segments
+                    WHERE code_id = (SELECT code_id FROM codes WHERE jurisdiction=%s)
+                );
+                """,
+                (jurisdiction.name,)
+            )
+            # Collect all texts and their corresponding chunk_ids
+            texts, chunk_ids = zip(*[(text, chunk_id) for chunk_id, text in cursor.fetchall()])
+            # Create embeddings for the texts
+            embeddings = create_embeddings(texts)
+            # Update the chunks with the embeddings
+            for chunk_id, embedding in zip(chunk_ids, embeddings):
+                cursor.execute(
+                    """
+                    UPDATE chunks
+                    SET embedding = %s
+                    WHERE chunk_id = %s;
+                    """,
+                    (str(embedding), chunk_id)
+                )
+
 def upload(db: dict, jurisdiction: Jurisdiction) -> None:
     """Upload (1) metadata about the jurisdiction, to the `codes` table, (2) segments of the code,
-    to the `segments` table, and (3) chunks and their embedding vectors, to the `chunks` table."""
+    to the `segments` table, and (3) chunks to the `chunks` table."""
     upload_code(db, jurisdiction)
     upload_segments(db, jurisdiction)
     enhance_chunks(db, jurisdiction)
+#    create_embeddings(db, jurisdiction)
 
 ##################################################
 ## Associations
