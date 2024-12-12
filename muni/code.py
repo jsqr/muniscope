@@ -285,7 +285,7 @@ def create_embeddings(texts: list[str], model=EMBEDDING_MODEL) -> list[list[floa
 
 from psycopg import connect
 
-EMBEDDING_LENGTH = len(create_embeddings(["test"]))
+# EMBEDDING_LENGTH = len(create_embeddings(["test"])[0])
 
 def connection(db: dict):
     return connect(
