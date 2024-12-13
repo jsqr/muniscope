@@ -358,6 +358,24 @@ def upload_code(db: dict, jurisdiction: Jurisdiction, overwrite: bool = True) ->
     with connection(db) as conn:
         with conn.cursor() as cursor:
             if overwrite:
+                ## First, delete all segments and chunks associated with the jurisdiction
+                cursor.execute(
+                    """
+                    DELETE FROM chunks
+                    WHERE segment_id IN (
+                        SELECT segment_id FROM segments
+                        WHERE code_id =(SELECT code_id FROM codes WHERE jurisdiction=%s)
+                    );
+                    """,
+                    (jurisdiction.name,)
+                )
+                cursor.execute(
+                    """
+                    DELETE FROM segments WHERE code_id=(SELECT code_id FROM codes WHERE jurisdiction=%s);
+                    """,
+                    (jurisdiction.name,)
+                )
+                ## Then, delete the code metadata
                 cursor.execute(
                     "DELETE FROM codes WHERE jurisdiction=%s;",
                     (jurisdiction.name,)
@@ -385,25 +403,19 @@ def upload_segments(db: dict, jurisdiction: Jurisdiction, overwrite: bool = True
     """Upload segments of the code to the `segments` table."""
     with connection(db) as conn:
         with conn.cursor() as cursor:
+            if overwrite:
+                cursor.execute(
+                    """
+                    DELETE FROM segments WHERE code_id=(SELECT code_id FROM codes WHERE jurisdiction=%s);
+                    """,
+                    (jurisdiction.name,)
+                )
             for segment in jurisdiction.document:
                 if not segment.paragraphs:
                     continue # skip empty segments (usually part of a table of contents)
                 headings = [segment.headings.get(i, None) for i in LEVELS]
                 heading_enumerations = [heading.enumeration if heading else None for heading in headings]
                 heading_texts = [heading.heading_text if heading else None for heading in headings]
-                if overwrite:
-                    cursor.execute(
-                        """
-                        DELETE FROM segments WHERE code_id=(SELECT code_id FROM codes WHERE jurisdiction=%s)
-                            AND H1_enumeration=%s
-                            AND H2_enumeration=%s
-                            AND H3_enumeration=%s
-                            AND H4_enumeration=%s
-                            AND H5_enumeration=%s;
-                        """,
-                        (jurisdiction.name, heading_enumerations[1], heading_enumerations[2],
-                        heading_enumerations[3], heading_enumerations[4], heading_enumerations[5])
-                    )
                 cursor.execute(
                     """
                     INSERT INTO segments (code_id, segment_level,
