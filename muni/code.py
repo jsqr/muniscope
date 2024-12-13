@@ -42,16 +42,58 @@ class Segment:
     paragraphs: list[str] = field(default_factory=list) # list of paragraphs
     chunks: list[str] = field(default_factory=list) # sized for embeddings
 
-    def chunkify(self, n: int):
-        """Regroup the paragraphs of a segment into chunks of size no more than n characters."""
-        self.chunks = []
-        current_chunk = ''
-        for paragraph in self.paragraphs:
-            if len(current_chunk) + len(paragraph) > n:
-                self.chunks.append(current_chunk)
-                current_chunk = ''
-            current_chunk += paragraph + '\n'
-        self.chunks.append(current_chunk)
+    def chunkify(self, max_words: int):
+        self.chunks = chunkify_paragraphs(self.paragraphs, max_words)
+
+## FIXME: rewrite repeated code in chunkify_paragraph and chunkify_paragraphs
+def chunkify_paragraph(paragraph: str, max_words: int) -> list[str]:
+    """Chunkify a paragraph into chunks of at most `max_words` words."""
+    ## FIXME: probably better to split on sentences
+    words = paragraph.split()
+    if not words:
+        return []
+    
+    chunks = []
+    current_chunk = words[0]
+    for word in words[1:]:
+        if len(current_chunk.split()) + 1 > max_words:
+            chunks.append(current_chunk)
+            current_chunk = word
+        else:
+            current_chunk += ' ' + word
+    if current_chunk:
+        chunks.append(current_chunk)
+    return chunks
+
+def chunkify_paragraphs(paragraphs: list[str], max_words: int) -> list[str]:
+    """Chunkify a list of paragraphs into chunks of at most `max_words` words.
+    If any individual paragraph is too long, it will be split along word boundaries."""
+
+    ## go through the list of paragraphs. If a paragraph is too long, split it into chunks
+    ## and insert the chunks into the list of paragraphs
+    new_paragraphs = []
+    for paragraph in paragraphs:
+        if len(paragraph.split()) > max_words:
+            new_paragraphs.extend(chunkify_paragraph(paragraph, max_words))
+        else:
+            new_paragraphs.append(paragraph)
+
+    ## now go through new_paragraphs and group them into a list of chunks each no
+    ## longer than max_words
+    chunks = []
+    if not new_paragraphs:
+        return chunks
+    current_chunk = new_paragraphs[0]
+    for paragraph in new_paragraphs[1:]:
+        if len(current_chunk.split()) + len(paragraph.split()) > max_words:
+            chunks.append(current_chunk)
+            current_chunk = paragraph
+        else:
+            current_chunk += '\n' + paragraph
+    
+    if current_chunk:
+        chunks.append(current_chunk)
+    return chunks
 
 ## For our purposes, a document is just a list of segments -- the structure is
 ## implicit in the headings, which will be uploaded to a relational database
@@ -252,7 +294,7 @@ class Jurisdiction:
         self.parser = StateMachineParser(f"{self.name} Code", self.patterns)
         self.document = self.parser.parse(self.raw_text)
 
-    def chunkify(self, n: int = 1000):
+    def chunkify(self, n: int = 5000):
         for segment in self.document:
             if len(segment.paragraphs) == 0:
                 continue
@@ -404,7 +446,6 @@ def enhance_chunks(db: dict, jurisdiction: Jurisdiction) -> None:
     to give the embedding model more context."""
     with connection(db) as conn:
         with conn.cursor() as cursor:
-
             cursor.execute(
                 """
                 UPDATE chunks
