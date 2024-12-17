@@ -11,15 +11,6 @@ from warnings import warn
 # because in some cases outlines skip levels, which would complicate the formal
 # grammar.
 
-#@unique
-#class Level(Enum):
-#    H0 = 0 # top level (initial state)
-#    H1 = 1
-#    H2 = 2
-#    H3 = 3
-#    H4 = 4
-#    H5 = 5
-
 LEVELS = [0, 1, 2, 3, 4, 5]
 
 @dataclass
@@ -316,6 +307,12 @@ class Jurisdiction:
 
 EMBEDDING_MODEL = "text-embedding-3-small"
 
+def create_embedding(text: str, model=EMBEDDING_MODEL) -> list[float]:
+    """Create an embedding for a single text block."""
+    client = OpenAI()
+    response = client.embeddings.create(input=text, model=model)
+    return response.data[0].embedding
+
 def create_embeddings(texts: list[str], model=EMBEDDING_MODEL) -> list[list[float]]:
     """Create embeddings for a list of text blocks."""
     client = OpenAI()
@@ -453,7 +450,7 @@ def upload_segments(db: dict, jurisdiction: Jurisdiction, overwrite: bool = True
                     [(segment_id, i, chunk) for i, chunk in enumerate(segment.chunks)]
                 )
 
-def enhance_chunks(db: dict, jurisdiction: Jurisdiction) -> None:
+def enhance_chunks(db: dict, place: Jurisdiction) -> None:
     """Enhance the chunks in the `chunks` table by prepending the heading info
     to give the embedding model more context."""
     with connection(db) as conn:
@@ -473,6 +470,13 @@ def enhance_chunks(db: dict, jurisdiction: Jurisdiction) -> None:
                 WHERE chunks.segment_id = segments.segment_id;
                 """
             )
+
+def upload(db: dict, jurisdiction: Jurisdiction) -> None:
+    """Upload (1) metadata about the jurisdiction, to the `codes` table, (2) segments of the code,
+    to the `segments` table, and (3) chunks to the `chunks` table."""
+    upload_code(db, jurisdiction)
+    upload_segments(db, jurisdiction)
+    enhance_chunks(db, jurisdiction)
 
 def upload_embeddings(db: dict, jurisdiction: Jurisdiction) -> None:
     """Create embeddings for the chunks in the `chunks` table."""
@@ -505,16 +509,10 @@ def upload_embeddings(db: dict, jurisdiction: Jurisdiction) -> None:
                     (str(embedding), chunk_id)
                 )
 
-def upload(db: dict, jurisdiction: Jurisdiction) -> None:
-    """Upload (1) metadata about the jurisdiction, to the `codes` table, (2) segments of the code,
-    to the `segments` table, and (3) chunks to the `chunks` table."""
-    upload_code(db, jurisdiction)
-    upload_segments(db, jurisdiction)
-    enhance_chunks(db, jurisdiction)
-#    create_embeddings(db, jurisdiction)
-
 ##################################################
 ## Associations
+
+## FIXME: all need to be updated for new schema, and to use GPT-4o output constraints
 
 CONTEXT_TYPES = {
     'rule': 'Statement of a rule, obligation, or prohibition',
@@ -702,20 +700,6 @@ sql_select = """
     FROM muni;
     """
 
-sql_unique = """
-    BEGIN
-        IF NOT EXISTS (
-            SELECT FROM pg_constraint
-            WHERE conname = 'unique_associations')
-            AND   conrelid = 'muni_associations'::regclass
-        ) 
-        THEN
-            ALTER TABLE muni_associations
-            ADD CONSTRAINT unique_associations UNIQUE (jurisdiction, association, left_id, right_id);
-        END IF;
-    END;
-    """
-
 sql_assoc = """
     INSERT INTO muni_associations (jurisdiction, association, left_id, right_id)
     VALUES (%s, %s, %s, %s)
@@ -781,18 +765,18 @@ def find_associations(conn, jurisdiction):
 ##################################################
 ## Querying
 
-def simple_semantic_query(conn, query, limit=10):
-    query_embedding = create_embedding(query)
-    with conn.cursor() as cursor:
-        sql = """
-        SELECT id, L4_heading, text
-        FROM muni
-        WHERE jurisdiction = 'Chicago'
-        ORDER BY embedding <=> %s
-        LIMIT %s;
-        """
-        cursor.execute(sql, (str(query_embedding), limit))
-        return cursor.fetchall()
+def simple_semantic_query(db: dict, jurisdiction: Jurisdiction, query: str, limit=10):
+    with connection(db) as conn:
+        query_embedding = create_embedding(query)
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT chunk_id, enhanced_content
+                FROM chunks
+                WHERE jurisdiction = %s
+                ORDER BY embedding <=> %s
+                LIMIT %s;
+                """, (jurisdiction.name, str(query_embedding), limit))
+            return cursor.fetchall()
         
 def simple_full_text_query(conn, query, limit=10):
     with conn.cursor() as cursor:

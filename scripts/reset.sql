@@ -7,8 +7,9 @@
 
 DROP TABLE IF EXISTS associations CASCADE;
 DROP TYPE IF EXISTS assoc_type CASCADE;
-DROP TABLE IF EXISTS segments;
+DROP MATERIALIZED VIEW IF EXISTS mv_chunks;
 DROP TABLE IF EXISTS chunks;
+DROP TABLE IF EXISTS segments;
 DROP TABLE IF EXISTS codes;
 
 -- Track associations among provisions
@@ -25,13 +26,12 @@ CREATE TABLE associations (
 );
 
 -- Segments may be longer than the optimal chunk size for an embedding
--- (say, 1000 characters), so we break them up into chunks for vector search
+-- (say, 500 or 1000 words), so we break them up into chunks for vector search
 CREATE TABLE chunks (
        chunk_id SERIAL PRIMARY KEY,
        segment_id INTEGER, -- foreign key to citable segment
+       -- code_id INTEGER, -- foreign key to code
        chunk_idx INTEGER, -- index of chunk within segment
-       -- begin_idx INTEGER, -- index of start of segment within provision text
-       -- end_idx INTEGER, -- index of end of segment
        content TEXT,
        enhanced_content TEXT, -- Additional context (e.g., headings)
        embedding VECTOR(1536), -- FIXME: see above (1536 for text-embedding-3-small)
@@ -66,6 +66,36 @@ CREATE TABLE codes (
        H5_name TEXT,    H5_pattern TEXT
 );
 
+-- Create a materialized view to optimize querying chunks with associated metadata
+CREATE MATERIALIZED VIEW mv_chunks AS
+SELECT 
+    chunks.chunk_id,
+    chunks.segment_id,
+    chunks.chunk_idx,
+    chunks.content,
+    chunks.enhanced_content,
+    chunks.embedding,
+    segments.H1_enumeration,       segments.H1_text,
+    segments.H2_enumeration,       segments.H2_text,
+    segments.H3_enumeration,       segments.H3_text,
+    segments.H4_enumeration,       segments.H4_text,
+    segments.H5_enumeration,       segments.H5_text,
+    codes.code_id,
+    codes.jurisdiction,
+    codes.H1_name,
+    codes.H2_name,
+    codes.H3_name,
+    codes.H4_name,
+    codes.H5_name
+FROM 
+    chunks
+JOIN 
+    segments ON chunks.segment_id = segments.segment_id
+JOIN 
+    codes ON segments.code_id = codes.code_id;
+
+REFRESH MATERIALIZED VIEW mv_chunks;
+
 -------------------------------------------------------------------
 -- Full-text search using the search_vector column in segments   --
 -- and the enhanced_content column in chunks                     --
@@ -92,5 +122,6 @@ FOR EACH ROW EXECUTE FUNCTION segments_search_vector_update();
 -- Create a generalized inverted index
 CREATE INDEX idx_segments_search_vector ON segments USING GIN (search_vector);
 
--- Do the same for the 'enhanced_content' field in chunks
+-- Do the same for the 'enhanced_content' field in chunks and the mv_chunks view
 CREATE INDEX idx_chunks_search_vector ON chunks USING GIN (to_tsvector('english', enhanced_content));
+CREATE INDEX idx_mv_chunks_enhanced_content ON mv_chunks USING GIN (to_tsvector('english', enhanced_content));
