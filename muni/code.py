@@ -509,6 +509,12 @@ def upload_embeddings(db: dict, jurisdiction: Jurisdiction) -> None:
                     (str(embedding), chunk_id)
                 )
 
+def refresh_views(db: dict) -> None:
+    """Refresh the materialized views in the database."""
+    with connection(db) as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("REFRESH MATERIALIZED VIEW mv_chunks;")
+
 ##################################################
 ## Associations
 
@@ -771,58 +777,82 @@ def simple_semantic_query(db: dict, jurisdiction: Jurisdiction, query: str, limi
         with conn.cursor() as cursor:
             cursor.execute("""
                 SELECT chunk_id, enhanced_content
-                FROM chunks
+                FROM mv_chunks
                 WHERE jurisdiction = %s
                 ORDER BY embedding <=> %s
                 LIMIT %s;
                 """, (jurisdiction.name, str(query_embedding), limit))
             return cursor.fetchall()
         
-def simple_full_text_query(conn, query, limit=10):
-    with conn.cursor() as cursor:
-        sql = """
-        WITH tsq AS (
-            SELECT to_tsquery('english', %s) AS search
+@marvin.fn
+def extract_keywords(text: str) -> list[str] | None:
+    """Extract keywords from a block of text. The keywords should be single words
+    that are most likely to return relevant results in a text search.
+    Do not include common words like 'the', 'and', 'or', etc., and do not include
+    framing language such as references to municipal codes, regulations, purpose,
+    relationships, etc. Return a list of keywords, in order of importance.
+    
+    # Examples:
+    1. extract_keywords("The purpose of this chapter is to establish regulations for the use of public parks.")
+    -> ['use', 'public', 'parks']
+    2. extract_keywords("The following definitions apply to this chapter: 'park' means a public space for recreation.")
+    -> ['definitions', 'park', 'public', 'space', 'recreation']
+    """
+
+def simple_full_text_query(db:dict, jurisdiction: Jurisdiction, query: str, limit=10):
+    with connection(db) as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                WITH tsq AS (
+                    SELECT plainto_tsquery('english', %s) AS tsq
+                    )
+                SELECT chunk_id, enhanced_content
+                FROM mv_chunks, tsq
+                WHERE to_tsvector(enhanced_content) @@ tsq
+                AND jurisdiction = %s
+                -- ORDER BY ts_rank_cd(to_tsvector(enhanced_content), tsq) DESC
+                LIMIT %s;
+                """, (query, jurisdiction.name, limit)
             )
-        SELECT id, L4_heading, text
-        FROM muni, tsq
-        WHERE jurisdiction = 'Chicago'
-        AND textsearchable @@ tsq.search
-        ORDER BY ts_rank_cd(textsearchable, tsq.search)
-        LIMIT %s;
-        """
-        cursor.execute(sql, (query, limit))
-        return cursor.fetchall()
+            return cursor.fetchall()
 
 # Now we do a more complicated hybrid search, borrowing and adapting from 
 # https://github.com/pgvector/pgvector-python/blob/master/examples/hybrid_search_rrf.py
 
-def hybrid_query(conn, query, limit=10):
+def hybrid_query(db:dict, jurisdiction: Jurisdiction, query: str, limit=10):
     embedding = create_embedding(query)
 
-    sql = """
+    with connection(db) as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
     WITH semantic_search AS (
-        SELECT id, L4_heading, RANK () OVER (ORDER BY embedding <=> %(embedding)s) AS rank
-        FROM muni
+        SELECT chunk_id, enhanced_content, RANK () OVER (ORDER BY embedding <=> %(embedding)s)
+        FROM mv_chunks
+        WHERE jurisdiction = %(jurisdiction)s
         ORDER BY embedding <=> %(embedding)s
-        LIMIT 20
+        LIMIT %(limit)s
     ),
     keyword_search AS (
-        SELECT id, L4_heading, RANK () OVER (ORDER BY ts_rank_cd(textsearchable, query) DESC)
-        FROM muni, plainto_tsquery('english', %(query)s) query
-        WHERE textsearchable @@ query
-        ORDER BY ts_rank_cd(textsearchable, query) DESC
-        LIMIT 20
+        SELECT chunk_id, enhanced_content, RANK () OVER (ORDER BY ts_rank_cd(to_tsvector(enhanced_content), tsq) DESC)
+        FROM mv_chunks, plainto_tsquery('english', %(query)s) tsq
+        WHERE to_tsvector(enhanced_content) @@ tsq
+        AND jurisdiction = %(jurisdiction)s
+        -- ORDER BY ts_rank_cd(to_tsquery(enhanced_content), tsq) DESC
+        LIMIT %(limit)s
     )
     SELECT
-        COALESCE(semantic_search.id, keyword_search.id) AS id,
+        COALESCE(semantic_search.chunk_id, keyword_search.chunk_id) AS chunk_id,
         COALESCE(1.0 / (%(k)s + semantic_search.rank), 0.0) +
         COALESCE(1.0 / (%(k)s + keyword_search.rank), 0.0) AS score,
-        COALESCE(semantic_search.L4_heading, keyword_search.L4_heading) AS L4_heading
+        COALESCE(semantic_search.enhanced_content, keyword_search.enhanced_content) AS enhanced_content
     FROM semantic_search
-    FULL OUTER JOIN keyword_search ON semantic_search.id = keyword_search.id
+    FULL OUTER JOIN keyword_search ON semantic_search.chunk_id = keyword_search.chunk_id
     ORDER BY score DESC
     LIMIT %(limit)s;
-    """
-    result = conn.execute(sql, {'query': query, 'embedding': str(embedding), 'limit': limit, 'k': 60})
-    return result.fetchall()
+    """,
+    {'jurisdiction': jurisdiction.name, 'query': query,
+     'embedding': str(embedding), 'limit': limit, 'k': 60})
+            
+            return cursor.fetchall()

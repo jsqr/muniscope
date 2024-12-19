@@ -18,7 +18,7 @@ CREATE TYPE assoc_type as ENUM ('definition', 'interpretation', 'limitation', 'p
 
 CREATE TABLE associations (
        assoc_id SERIAL PRIMARY KEY,
-       code_id INTEGER,
+       code_id INTEGER, -- foreign key to code
        assoc_type assoc_type,
        left_id INTEGER, -- ref to primary provision (e.g., an obligation or prohibition)
        right_id INTEGER, -- ref to associated provision (e.g., list of applicable defs)
@@ -93,8 +93,6 @@ JOIN
     segments ON chunks.segment_id = segments.segment_id
 JOIN 
     codes ON segments.code_id = codes.code_id;
-
-REFRESH MATERIALIZED VIEW mv_chunks;
 
 -------------------------------------------------------------------
 -- Full-text search using the search_vector column in segments   --
