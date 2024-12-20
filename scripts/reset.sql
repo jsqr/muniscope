@@ -11,6 +11,7 @@ DROP MATERIALIZED VIEW IF EXISTS mv_chunks;
 DROP TABLE IF EXISTS chunks;
 DROP TABLE IF EXISTS segments;
 DROP TABLE IF EXISTS codes;
+DROP TABLE IF EXISTS reports;
 
 -- Track associations among provisions
 
@@ -64,6 +65,18 @@ CREATE TABLE codes (
        H3_name TEXT,    H3_pattern TEXT,
        H4_name TEXT,    H4_pattern TEXT,
        H5_name TEXT,    H5_pattern TEXT
+);
+
+CREATE TABLE reports (
+       result_id SERIAL PRIMARY KEY,
+       code_id INTEGER, -- foreign key to code
+       query TEXT,
+       short_answer TEXT,
+       full_answer TEXT,
+       context TEXT,
+       support TEXT,
+       other TEXT,
+       CONSTRAINT unique_report UNIQUE (code_id, query)
 );
 
 -- Create a materialized view to optimize querying chunks with associated metadata

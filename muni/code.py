@@ -856,3 +856,119 @@ def hybrid_query(db:dict, jurisdiction: Jurisdiction, query: str, limit=10):
      'embedding': str(embedding), 'limit': limit, 'k': 60})
             
             return cursor.fetchall()
+
+##################################################
+## Reports
+
+@marvin.fn
+def is_relevant(text: str, query: str) -> bool | None:
+    """Given a block of text and a query, determine whether the text is relevant to the query
+    (that is, if the text could help to answer the query). Return True if the text is relevant,
+    and False if it is not. If the relevance is unclear, return True.
+    """
+
+def gather_context(db: dict, jurisdiction: Jurisdiction, query: str) -> list[str]:
+    """Create context for a query on a jurisdiction's code."""
+    context = []
+    results = simple_semantic_query(db, jurisdiction, query)
+    for result in results:
+        _, text = result
+        if is_relevant(text, query):
+            context.append(text)
+    return context
+
+@marvin.fn
+def answer_query(context: str, query: str, jurisdiction: str) -> str | None:
+    """You are an expert at interpreting and extracting information from municipal codes and ordinances.
+    Please provide a concise answer to the `query`, drawing on the `context` provided.
+    The context consists of relevant text blocks from the code or ordinance of `jurisdiction`.
+    You should base your answer solely on the context provided, and not on any external information
+    or prior knowledge. Your answer should be a single sentence or short paragraph,
+    with citations to the relevant sections of the code or ordinance supporting your answer.
+    """
+
+@marvin.fn
+def true_or_false(text: str, query: str) -> bool | None:
+    """Given a block of text and a query, determine whether the text tends to support
+    the proposition (that is, whether the text provides evidence that the proposition
+    is true or likely to be true). Return `True` if the text supports the proposition,
+    and `False` if it does not.
+    """
+
+@marvin.fn
+def supports(text: str, proposition: str) -> bool | None:
+    """Given a block of text and a proposition, determine whether the text supports the proposition.
+    Return True if the text supports the proposition, and False if it does not.
+    If the level of support is unclear, return False.
+    """
+
+class Report:
+    jurisdiction: Jurisdiction
+    query: str
+    short_answer: str
+    full_answer: str
+    context: str
+    support: str
+    other: str
+
+    def __init__(self, db: dict, jurisdiction: Jurisdiction, query: str):
+        self.jurisdiction = jurisdiction
+        self.query = query
+        self.context_list = gather_context(db, jurisdiction, query)
+        if not self.context_list:
+            warn(f"No relevant context found for query '{query}' in {jurisdiction.name}")
+            return
+        print(f"Found {len(self.context_list)} relevant context blocks for query '{query}' in {jurisdiction.name}")
+        self.context = '#### Excerpt:\n\n' + '\n\n#### Excerpt:\n\n'.join(self.context_list)
+        self.full_answer = answer_query(self.context, query, jurisdiction.name)
+        self.short_answer = 'yes' if true_or_false(self.full_answer, query) else 'no'
+        support_list = []
+        other_list = []
+        for text in self.context_list:
+            if supports(text, self.full_answer):
+                support_list.append(text)
+            else:
+                other_list.append(text)
+        self.support = '#### Excerpt:\n\n' + '\n\n#### Excerpt:\n\n'.join(support_list)
+        self.other = '#### Excerpt:\n\n' + '\n\n#### Excerpt:\n\n'.join(other_list)
+
+    def __str__(self):
+        ret = f"### Query: {self.query}\n\n"
+        ret += f"### Short answer:\n\n{self.short_answer}\n\n"
+        ret += f"### Full Answer:\n\n{self.full_answer}\n\n"
+        if self.support:
+            ret += f"### Supporting context:\n\n{self.support}\n\n"
+        if self.other:
+            ret += f"### Other context:\n\n{self.other}\n\n"
+        return ret
+
+##################################################
+## Uploading reports to database
+
+def upload_report(db: dict, report: Report) -> None:
+    """Upload a report for a query on a jurisdiction's code to the `reports` table."""
+    # find the code_id corresponding to report.jurisdiction
+    with connection(db) as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT code_id FROM codes WHERE jurisdiction=%s;",
+                (report.jurisdiction.name,)
+            )
+            result = cursor.fetchone()
+            if not result or len(result) < 1:
+                warn(f"Failed to find code_id for jurisdiction {report.jurisdiction.name}")
+                code_id = 0
+            else:
+                code_id = result[0]
+
+            cursor.execute(
+                """
+                INSERT INTO reports (code_id, query, 
+                                     short_answer, full_answer,
+                                     context, support, other)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (code_id, query) DO NOTHING;
+                """,
+                (code_id, report.query, report.short_answer, report.full_answer,
+                report.context, report.support, report.other)
+            )
