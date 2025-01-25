@@ -1,6 +1,6 @@
 # muniscope
 
-Automated analysis of municipal codes for legal epistemology.
+Automated analysis of municipal codes for legal epidemiology.
 
 ## Getting started
 
