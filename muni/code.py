@@ -109,12 +109,26 @@ def match_heading(paragraph: str, patterns: dict[int, HeadingPattern]) -> Headin
         if pattern.multi_line:
             first, rest = split_paragraph(paragraph)
             match = pattern_regex.match(first)
-            if match:
-                return Heading(level=level, enumeration=match.group(1), heading_text=rest)
+            # For multi-line headings, assume group(1) exists and rest is taken as heading text.
+            if match is not None:
+                if len(match.groups()) >= 1:
+                    return Heading(level=level, enumeration=match.group(1), heading_text=rest)
+                else:
+                    print(f"[DEBUG] Ignoring multi-line paragraph due to insufficient groups for level {level}: {paragraph}")
+                    continue
+            #if match:
+            #    return Heading(level=level, enumeration=match.group(1), heading_text=rest)
         else:
             match = pattern_regex.match(paragraph)
-            if match:
-                return Heading(level=level, enumeration=match.group(1), heading_text=match.group(2))
+            if match is None:
+                continue  # No match found; try next pattern.
+            #if match:
+                # Check that we have at least two groups (enumeration and heading text).
+            if len(match.groups()) < 2:
+                print(f"[DEBUG] Incomplete match for level {level} in paragraph: {paragraph}\nGroups: {match.groups()}")
+                continue 
+            return Heading(level=level, enumeration=match.group(1), heading_text=match.group(2))
+    return None  # No matches found for any pattern.
 
 class StateMachineParser:
     def __init__(self, document_name: str, heading_patterns: dict[int, HeadingPattern]):
@@ -131,6 +145,7 @@ class StateMachineParser:
 
         for paragraph in paragraphs:
 
+            #print(f"[DEBUG]Parsing paragraph: {paragraph}") # DEBUG print statement
             match = match_heading(paragraph, self.patterns)
 
             # no heading found, so add paragraph to the current segment
@@ -167,6 +182,7 @@ CONTEXT_WINDOW = 128000
 import marvin
 from openai import OpenAI
 
+marvin
 openai_client = OpenAI()
 
 def llm(prompt: str, system: str = "", model: str = "gpt-4o") -> str | None:
@@ -297,7 +313,12 @@ class Jurisdiction:
                 continue
             text = '\n'.join(segment.paragraphs)
             heading = segment.headings[segment.level]
-            level_name = self.level_names[segment.level]
+            #level_name = self.level_names[segment.level]
+            if segment.level == 0:
+                level_name = segment.headings.get(0, 'Unnamed Document')
+                print(f"Document Name: {segment.headings.get(0, 'Unnamed Document')}")
+            else:
+                level_name = self.level_names[segment.level]
             print(f"{' ' * 4 * segment.level}H{segment.level} {level_name}", end='')
             print(f" {heading.enumeration} ({remove_newlines(heading.heading_text)})", end='') if heading else print()
             print(f": {len(segment.chunks)} chunks, {len(segment.paragraphs)} paragraphs, {len(text)} characters")
@@ -871,10 +892,12 @@ def gather_context(db: dict, jurisdiction: Jurisdiction, query: str) -> list[str
     """Create context for a query on a jurisdiction's code."""
     context = []
     results = simple_semantic_query(db, jurisdiction, query)
+    #print(results) #Debugging
     for result in results:
         _, text = result
         if is_relevant(text, query):
             context.append(text)
+    #print(context) #Debugging
     return context
 
 @marvin.fn
@@ -914,7 +937,9 @@ class Report:
     def __init__(self, db: dict, jurisdiction: Jurisdiction, query: str):
         self.jurisdiction = jurisdiction
         self.query = query
+        #print(self.query) #debugging
         self.context_list = gather_context(db, jurisdiction, query)
+        #print(self.context_list) #debugging
         if not self.context_list:
             warn(f"No relevant context found for query '{query}' in {jurisdiction.name}")
             return
@@ -972,3 +997,4 @@ def upload_report(db: dict, report: Report) -> None:
                 (code_id, report.query, report.short_answer, report.full_answer,
                 report.context, report.support, report.other)
             )
+            
