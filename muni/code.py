@@ -109,12 +109,26 @@ def match_heading(paragraph: str, patterns: dict[int, HeadingPattern]) -> Headin
         if pattern.multi_line:
             first, rest = split_paragraph(paragraph)
             match = pattern_regex.match(first)
-            if match:
-                return Heading(level=level, enumeration=match.group(1), heading_text=rest)
+            # For multi-line headings, assume group(1) exists and rest is taken as heading text.
+            if match is not None:
+                if len(match.groups()) >= 1:
+                    return Heading(level=level, enumeration=match.group(1), heading_text=rest)
+                else:
+                    print(f"[DEBUG] Ignoring multi-line paragraph due to insufficient groups for level {level}: {paragraph}")
+                    continue
+            #if match:
+            #    return Heading(level=level, enumeration=match.group(1), heading_text=rest)
         else:
             match = pattern_regex.match(paragraph)
-            if match:
-                return Heading(level=level, enumeration=match.group(1), heading_text=match.group(2))
+            if match is None:
+                continue  # No match found; try next pattern.
+            #if match:
+                # Check that we have at least two groups (enumeration and heading text).
+            if len(match.groups()) < 2:
+                print(f"[DEBUG] Incomplete match for level {level} in paragraph: {paragraph}\nGroups: {match.groups()}")
+                continue 
+            return Heading(level=level, enumeration=match.group(1), heading_text=match.group(2))
+    return None  # No matches found for any pattern.
 
 class StateMachineParser:
     def __init__(self, document_name: str, heading_patterns: dict[int, HeadingPattern]):
@@ -131,6 +145,7 @@ class StateMachineParser:
 
         for paragraph in paragraphs:
 
+            #print(f"[DEBUG]Parsing paragraph: {paragraph}") # DEBUG print statement
             match = match_heading(paragraph, self.patterns)
 
             # no heading found, so add paragraph to the current segment
@@ -167,6 +182,7 @@ CONTEXT_WINDOW = 128000
 import marvin
 from openai import OpenAI
 
+marvin
 openai_client = OpenAI()
 
 def llm(prompt: str, system: str = "", model: str = "gpt-4o") -> str | None:
@@ -297,7 +313,12 @@ class Jurisdiction:
                 continue
             text = '\n'.join(segment.paragraphs)
             heading = segment.headings[segment.level]
-            level_name = self.level_names[segment.level]
+            #level_name = self.level_names[segment.level]
+            if segment.level == 0:
+                level_name = segment.headings.get(0, 'Unnamed Document')
+                print(f"Document Name: {segment.headings.get(0, 'Unnamed Document')}")
+            else:
+                level_name = self.level_names[segment.level]
             print(f"{' ' * 4 * segment.level}H{segment.level} {level_name}", end='')
             print(f" {heading.enumeration} ({remove_newlines(heading.heading_text)})", end='') if heading else print()
             print(f": {len(segment.chunks)} chunks, {len(segment.paragraphs)} paragraphs, {len(text)} characters")
@@ -313,11 +334,65 @@ def create_embedding(text: str, model=EMBEDDING_MODEL) -> list[float]:
     response = client.embeddings.create(input=text, model=model)
     return response.data[0].embedding
 
+import tiktoken
+
+EMBEDDING_MODEL = "text-embedding-3-small"
+MAX_TOKENS_PER_BATCH = 250000
+
 def create_embeddings(texts: list[str], model=EMBEDDING_MODEL) -> list[list[float]]:
-    """Create embeddings for a list of text blocks."""
+    """
+    Generate embeddings for a list of text inputs using the specified OpenAI embedding model, 
+    while respecting the maximum token limit per API request by batching inputs.
+
+    Args:
+        texts (list[str]): A list of input text strings to embed.
+        model (str): The name of the OpenAI embedding model to use. Defaults to "text-embedding-3-small".
+
+    Returns:
+        list[list[float]]: A list of embedding vectors, one for each successfully processed input text.
+
+    Notes:
+        - This function uses `tiktoken` to tokenize inputs and estimate the number of tokens per text.
+        - Texts exceeding the maximum allowed token count (`MAX_TOKENS_PER_BATCH`) are skipped.
+        - Inputs are grouped into batches such that the total token count per batch does not exceed the limit.
+        - Each batch is submitted via the OpenAI API, and responses are collected and concatenated.
+
+    Example:
+        >>> texts = ["Hello world.", "OpenAI embeddings are powerful."]
+        >>> embeddings = create_embeddings(texts)
+    """
     client = OpenAI()
-    response = client.embeddings.create(input=texts, model=model)
-    return [embedding.embedding for embedding in response.data]
+    enc = tiktoken.encoding_for_model(model)
+    
+    all_embeddings = []
+    batch = []
+    batch_tokens = 0
+
+    for i, text in enumerate(texts):
+        tokens = len(enc.encode(text))
+
+        if tokens > MAX_TOKENS_PER_BATCH:
+            print(f"Skipping text {i} with {tokens} tokens (too large for a single request)")
+            continue
+
+        # Flush batch if adding this would exceed token limit
+        if batch and batch_tokens + tokens > MAX_TOKENS_PER_BATCH:
+            #print(f"Submitting batch of {len(batch)} texts with {batch_tokens} tokens") #[DEBUG]
+            response = client.embeddings.create(input=batch, model=model)
+            all_embeddings.extend([e.embedding for e in response.data])
+            batch = []
+            batch_tokens = 0
+
+        batch.append(text)
+        batch_tokens += tokens
+
+    # Final batch
+    if batch:
+        #print(f"Submitting final batch of {len(batch)} texts with {batch_tokens} tokens") #[DEBUG]
+        response = client.embeddings.create(input=batch, model=model)
+        all_embeddings.extend([e.embedding for e in response.data])
+
+    return all_embeddings
 
 ##################################################
 ## Uploading to database
@@ -496,8 +571,25 @@ def upload_embeddings(db: dict, jurisdiction: Jurisdiction) -> None:
             )
             # Collect all texts and their corresponding chunk_ids
             texts, chunk_ids = zip(*[(text, chunk_id) for chunk_id, text in cursor.fetchall()])
+            """DEBUG BLOCK"""
+            #print("Length of texts:", len(texts))
+            #print("Text", texts)
+
+            enc = tiktoken.encoding_for_model("text-embedding-3-small")
+            total_tokens = 0
+            max_tokens = 0
+            for i, t in enumerate(texts):
+                token_count = len(enc.encode(t))
+                total_tokens += token_count
+                max_tokens = max(max_tokens, token_count)
+                #print(f"[{i}] Tokens: {token_count}")
+
+            #print(f"Total tokens: {total_tokens}") #[DEBUG]
+            #print(f"Max tokens in a single text: {max_tokens}") #[DEBUG]
+
             # Create embeddings for the texts
             embeddings = create_embeddings(texts)
+            #print("Length of Embeddings:", len(embeddings)) #[DEBUG]
             # Update the chunks with the embeddings
             for chunk_id, embedding in zip(chunk_ids, embeddings):
                 cursor.execute(
@@ -871,10 +963,14 @@ def gather_context(db: dict, jurisdiction: Jurisdiction, query: str) -> list[str
     """Create context for a query on a jurisdiction's code."""
     context = []
     results = simple_semantic_query(db, jurisdiction, query)
+    #print(results) #Debugging
     for result in results:
         _, text = result
+        #print("Text snippet:", text[:100])  # Print first 100 characters
+        #print("Is relevant?", is_relevant(text, query))
         if is_relevant(text, query):
             context.append(text)
+    print(context) #Debugging
     return context
 
 @marvin.fn
@@ -914,13 +1010,26 @@ class Report:
     def __init__(self, db: dict, jurisdiction: Jurisdiction, query: str):
         self.jurisdiction = jurisdiction
         self.query = query
+        self.short_answer = None
+        self.full_answer = None
+        self.support = None
+        self.other = None
+        self.context = None
         self.context_list = gather_context(db, jurisdiction, query)
         if not self.context_list:
             warn(f"No relevant context found for query '{query}' in {jurisdiction.name}")
             return
         print(f"Found {len(self.context_list)} relevant context blocks for query '{query}' in {jurisdiction.name}")
-        self.context = '#### Excerpt:\n\n' + '\n\n#### Excerpt:\n\n'.join(self.context_list)
+        self.context = '#### Excerpt:\n\n' + '\n\n#### Excerpt:\n\n'.join(self.context_list)      
         self.full_answer = answer_query(self.context, query, jurisdiction.name)
+        
+        """
+        Handle case where no answer is returned by setting default fallback responses.
+        """
+        if self.full_answer == None:
+            self.full_answer  = 'No answer found'
+            self.short_answer = 'no'
+            return  
         self.short_answer = 'yes' if true_or_false(self.full_answer, query) else 'no'
         support_list = []
         other_list = []
@@ -972,3 +1081,4 @@ def upload_report(db: dict, report: Report) -> None:
                 (code_id, report.query, report.short_answer, report.full_answer,
                 report.context, report.support, report.other)
             )
+            
